@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Job Market Outlook Dashboard</title>
+
+  <!-- Libraries -->
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/topojson@3"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/wordcloud2.js/1.2.2/wordcloud2.min.js"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f5f5f5;
+      margin: 0;
+      padding: 20px;
+    }
+
+    h1 {
+      text-align: center;
+      margin-bottom: 20px;
+      color: #333;
+    }
+
+    .dashboard {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+    }
+
+    .panel {
+      flex: 1 1 500px;
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      position: relative;
+    }
+
+    #map {
+      width: 100%;
+      height: 600px;
+      position: relative;
+    }
+
+    #map svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    #tooltip, #wordcloud-tooltip {
+      position: absolute;
+      background: rgba(0, 0, 0, 0.8);
+      color: white;
+      padding: 6px;
+      border-radius: 4px;
+      font-size: 12px;
+      display: none;
+      pointer-events: none;
+      z-index: 9999;
+    }
+
+    #wordCloud {
+      width: 100%;
+      height: 600px;
+    }
+
+    .loading, #error-message {
+      text-align: center;
+      margin-top: 20px;
+      font-size: 16px;
+      color: #666;
+    }
+
+    #error-message {
+      color: #f44336;
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Job Market Outlook Dashboard</h1>
+
+  <div class="dashboard">
+    <!-- Word Cloud Panel -->
+    <div class="panel">
+      <h2>Job Postings by Major</h2>
+      <div id="wordCloud"></div>
+      <div id="loading" class="loading">Loading word cloud data...</div>
+      <div id="error-message">Error loading word cloud data.</div>
+      <div id="wordcloud-tooltip"></div>
+    </div>
+
+    <!-- Map Panel -->
+    <div class="panel">
+      <h2>Job Market by State</h2>
+      <label for="criterion">Show the map by: </label>
+      <select id="criterion">
+        <option value="job_postings">Number of Job Postings</option>
+        <!-- <option value="avg_salary">Average Salary</option>
+        <option value="adjusted_salary">Purchase Power</option> -->
+        <option value="remote_ratio">% Remote Jobs</option>
+        <option value="cost_of_living">Cost of Living</option>
+        <option value="disposable_income">Disposable Income</option>
+        <option value="applies_per_job">Average Number of Applications</option>
+        <option value="total_views">Average Number of Views</option>
+      </select>
+      <div id="map"></div>
+      <!-- <div id="tooltip"></div> -->
+    </div>
+
+  <!-- Add tooltip divs outside the panels -->
+  <div id="tooltip"></div>
+  <div id="wordcloud-tooltip"></div>
+
+  <script>
+    // ---------- D3 MAP ----------
+    const width = 1200, height = 600;
+    const svg = d3.select("#map").append("svg").attr("width", width).attr("height", height);
+    const projection = d3.geoAlbersUsa().translate([width / 2, height / 2]).scale(1300);
+    const path = d3.geoPath().projection(projection);
+    const tooltip = d3.select("#tooltip");
+
+    function updateMapSize() {
+      const container = document.getElementById('map');
+      const containerWidth = container.clientWidth;
+      const containerHeight = container.clientHeight;
+      
+      svg.attr("width", containerWidth)
+         .attr("height", containerHeight);
+      
+      projection.translate([containerWidth / 2, containerHeight / 2])
+                .scale(Math.min(containerWidth, containerHeight) * 1.2);
+      
+      svg.selectAll("path").attr("d", path);
+    }
+
+    Promise.all([
+      d3.json("https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json"),
+      d3.csv("aggregated_state_job_data.csv")
+    ]).then(([us, data]) => {
+      const states = topojson.feature(us, us.objects.states).features;
+      const stateData = new Map(data.map((d) => [d.state, d]));
+      const color = d3.scaleQuantize().range(d3.schemeBlues[9]);
+
+      function updateMap(criterion) {
+        const values = data.map((d) => +d[criterion]).filter((v) => !isNaN(v));
+        color.domain([d3.min(values), d3.max(values)]);
+
+        svg.selectAll("path")
+          .data(states)
+          .join("path")
+          .attr("d", path)
+          .attr("fill", (d) => {
+            const stateName = d.properties.name;
+            const entry = stateData.get(stateName);
+            return entry && entry[criterion] ? color(+entry[criterion]) : "#ccc";
+          })
+          .attr("stroke", "#fff")
+          .on("mouseover", (event, d) => {
+            document.getElementById('wordcloud-tooltip').style.display = 'none';
+            const name = d.properties.name;
+            const entry = stateData.get(name);
+            tooltip
+              .style("display", "block")
+              .style("left", event.pageX + 10 + "px")
+              .style("top", event.pageY - 28 + "px")
+              .html(entry ? `
+                <strong>${name}</strong><br/>
+                Job Postings: ${(+entry.job_postings).toLocaleString()}<br/>
+                Remote %: ${(entry.remote_ratio * 100).toFixed(1)}%<br/>
+                Cost of Living: $${(+entry.cost_of_living).toLocaleString()}<br/>
+                Disposable Income: $${(+entry.disposable_income).toLocaleString()}<br/>
+                Applies per Job: ${entry.applies_per_job}<br/>
+                Average Views: ${(+entry.total_views/entry.job_postings).toLocaleString()}
+              ` : `<strong>${name}</strong><br/>No data`);
+          })
+          .on("mouseout", () => tooltip.style("display", "none"));
+      }
+
+      updateMapSize();
+      updateMap("job_postings");
+
+      d3.select("#criterion").on("change", function () {
+        updateMap(this.value);
+      });
+    });
+
+    // ---------- WORD CLOUD ----------
+    let wordData = [];
+    let originalData = {};
+    let wordCloudInstance = null;
+
+    function normalizeWeights(data) {
+      data.forEach(item => originalData[item[0]] = item[1]);
+      data.sort((a, b) => b[1] - a[1]);
+
+      return data.map((item, index) => {
+        let size = index < 5 ? 60 : index < 10 ? 50 : index < 20 ? 40 : index < 30 ? 30 : 20;
+        return [item[0], size];
+      });
+    }
+
+    async function loadWordData() {
+      try {
+        const response = await fetch("wordcloud_data.json");
+        const rawData = await response.json();
+        wordData = normalizeWeights(rawData);
+        document.getElementById("loading").style.display = "none";
+        renderWordCloud();
+      } catch (err) {
+        document.getElementById("loading").style.display = "none";
+        const errorBox = document.getElementById("error-message");
+        errorBox.style.display = "block";
+        errorBox.textContent = "Error loading word cloud data: " + err.message;
+      }
+    }
+
+    function renderWordCloud() {
+      const container = document.getElementById("wordCloud");
+      const wcTooltip = document.getElementById("wordcloud-tooltip");
+      container.innerHTML = "";
+
+      wordCloudInstance = WordCloud(container, {
+        list: wordData,
+        gridSize: Math.round(12 * (container.clientWidth / 500)),
+        weightFactor: 1,
+        fontFamily: "Arial",
+        color: function(word) {
+          const val = originalData[word];
+          const maxVal = Math.max(...Object.values(originalData));
+          const ratio = val / maxVal;
+          if (ratio > 0.8) return '#2E3192';
+          if (ratio > 0.6) return '#D4145A';
+          if (ratio > 0.4) return '#009245';
+          if (ratio > 0.2) return '#7B2ABF';
+          return '#FF6B00';
+        },
+        rotateRatio: 0.5,
+        backgroundColor: "#fff",
+        shape: "circle",
+        click: function(item) {
+          console.log("Clicked word:", item[0]);
+        },
+        hover: function(item, dimension) {
+          tooltip.style("display", "none");
+          if (!dimension) {
+            wcTooltip.style.display = "none";
+            return;
+          }
+
+          wcTooltip.style.display = "block";
+          wcTooltip.style.left = `${dimension.x}px`;
+          wcTooltip.style.top = `${dimension.y}px`;
+          wcTooltip.innerHTML = `
+            ${item[0]}: ${originalData[item[0]].toLocaleString()} relavant jobs`;
+        }
+      });
+    }
+
+    // Handle window resize
+    window.addEventListener('resize', function() {
+      updateMapSize();
+      if (wordData.length > 0) {
+        renderWordCloud();
+      }
+    });
+
+    document.addEventListener("DOMContentLoaded", loadWordData);
+  </script>
+</body>
+</html>
